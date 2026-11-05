@@ -150,6 +150,11 @@ textarea{font:13px/1.45 var(--mono);resize:vertical;min-height:152px}
   display:flex;align-items:center;gap:8px;font-size:.85rem;color:var(--tx);cursor:pointer;
 }
 .toolbar-filters select{padding:6px 10px;font-size:.8rem;width:100%;max-width:160px;min-width:0}
+.toolbar-filters .busca-hunt input{
+  padding:6px 10px;font-size:.8rem;width:100%;min-width:0;max-width:200px;
+  border:1px solid var(--bd);border-radius:var(--r-sm);background:var(--card);color:var(--tx);
+}
+th.col-sort,td.col-sort{background:color-mix(in srgb,var(--ac) 12%,transparent)}
 .toolbar-filters input[type="checkbox"]{accent-color:var(--ac);width:16px;height:16px}
 
 .barra{height:3px;background:var(--bd);border-radius:99px;margin:0 18px;overflow:hidden}
@@ -321,8 +326,12 @@ tbody tr.inv td{color:var(--ruim);opacity:.85}
         <span class="seg" id="ordemSeg">
           <button type="button" data-ordem="xp" class="active">XP / hora</button>
           <button type="button" data-ordem="ouro">Ouro / hora</button>
+          <button type="button" data-ordem="abates">Abates / hora</button>
         </span>
         <div class="toolbar-filters">
+          <label class="busca-hunt">Pokémon
+            <input type="search" id="buscaPokemon" placeholder="nome na hunt" autocomplete="off" spellcheck="false">
+          </label>
           <label><input type="checkbox" id="soLiberadas" checked> Só liberadas</label>
           <label>Tipo do dia
             <select id="tipoDia"><option value="">—</option></select>
@@ -334,7 +343,7 @@ tbody tr.inv td{color:var(--ruim);opacity:.85}
       <div class="chips-wrap"><div class="chips-label">Região</div><div class="chips" id="regioes"></div></div>
       <div class="table-wrap hunt-scroll">
         <table>
-          <thead><tr><th>#</th><th>Hunt</th><th id="thPrincipal">XP/h</th><th>Abates/h</th><th>Tempo</th><th id="thSec">Ouro/h</th></tr></thead>
+          <thead><tr><th>#</th><th>Hunt</th><th id="thPrincipal">XP/h</th><th id="thAbates">Abates/h</th><th>Tempo</th><th id="thSec">Ouro/h</th></tr></thead>
           <tbody id="corpo"></tbody>
         </table>
       </div>
@@ -363,7 +372,7 @@ const REGIOES = [
   { id: 'paldea', rotulo: 'Paldea' },
 ];
 
-const CHAVE = 'pi_hunt_local_v5';
+const CHAVE = 'pi_hunt_local_v6';
 /** Alvos médios por golpe com TM AoE (raio 11×11), calibrado em sessões reais. */
 const AOE_ABATES_POR_GOLPE = 2.2;
 /** Mesma constante do motor oficial (caminhada ÷ tempo do mapa em abate de 1 golpe). */
@@ -385,6 +394,25 @@ const curto = (n) => {
 };
 const dec1 = (s) => (Number.isFinite(s) ? s.toFixed(1).replace('.', ',') : '—');
 const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+const chaveBusca = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+
+function textosBuscaHunt(l) {
+  const h = hunts.find((x) => x.slug === l.slug);
+  const nomes = new Set();
+  if (l.nome) nomes.add(l.nome);
+  if (h?.nome) nomes.add(h.nome);
+  for (const e of h?.especies ?? []) {
+    const n = jogo?.especies?.get(e.pokeId)?.name;
+    if (n) nomes.add(n);
+  }
+  return [...nomes];
+}
+
+function huntBateBusca(l, bruto) {
+  const q = chaveBusca(bruto);
+  if (!q) return true;
+  return textosBuscaHunt(l).some((n) => chaveBusca(n).includes(q));
+}
 
 let jogo = null;
 let hunts = [];
@@ -398,11 +426,11 @@ function carregarEstado() {
   try {
     const s = JSON.parse(localStorage.getItem(CHAVE) ?? 'null');
     if (s && typeof s === 'object') return {
-      ordem: 'xp', soLiberadas: true, tipoDia: '', ficha: '', nvTreinador: '', nvPokemon: '', bonusXp: '',
+      ordem: 'xp', soLiberadas: true, tipoDia: '', buscaPokemon: '', ficha: '', nvTreinador: '', nvPokemon: '', bonusXp: '',
       usarBike: false, bikePct: '15', usarAoe: false, ...s,
     };
   } catch { /* ignore */ }
-  return { ordem: 'xp', soLiberadas: true, tipoDia: '', ficha: '', nvTreinador: '', nvPokemon: '', bonusXp: '', usarBike: false, bikePct: '15', usarAoe: false };
+  return { ordem: 'xp', soLiberadas: true, tipoDia: '', buscaPokemon: '', ficha: '', nvTreinador: '', nvPokemon: '', bonusXp: '', usarBike: false, bikePct: '15', usarAoe: false };
 }
 function salvarEstado() {
   try {
@@ -410,6 +438,7 @@ function salvarEstado() {
       ordem: estado.ordem,
       soLiberadas: estado.soLiberadas,
       tipoDia: estado.tipoDia,
+      buscaPokemon: estado.buscaPokemon,
       ficha: estado.ficha,
       nvTreinador: estado.nvTreinador,
       nvPokemon: estado.nvPokemon,
@@ -678,8 +707,12 @@ function abatesHtml(l) {
   return `≈${nf(l.kph)} <span class="faixa">${nf(lo)}–${nf(hi)}</span>`;
 }
 
-function desenharRegioes(todas, ouro) {
-  const valor = (l) => (ouro ? l.ouroH : l.xpPokemonH);
+function desenharRegioes(todas) {
+  const valor = (l) => {
+    if (estado.ordem === 'ouro') return l.ouroH;
+    if (estado.ordem === 'abates') return l.kph;
+    return l.xpPokemonH;
+  };
   const melhor = new Map();
   for (const l of todas) if (!l.inviavel && !melhor.has(l.regiao)) melhor.set(l.regiao, l);
 
@@ -706,21 +739,34 @@ let ultimoRankingBase = null;
 
 function renderRanking(r) {
   const ouro = estado.ordem === 'ouro';
+  const abates = estado.ordem === 'abates';
+  const chaveOrd = abates ? 'kph' : ouro ? 'ouroH' : 'xpPokemonH';
   $('thPrincipal').textContent = ouro ? 'OURO/H' : 'XP/H';
   $('thSec').textContent = ouro ? 'XP/H' : 'OURO/H';
+  $('thAbates')?.classList.toggle('col-sort', abates);
 
+  const busca = String(estado.buscaPokemon ?? '').trim();
   const linhasBonus = linhasAjustadas(r.linhas);
-  const todas = linhasBonus.slice().sort((a, b) =>
-    (b[ouro ? 'ouroH' : 'xpPokemonH'] - a[ouro ? 'ouroH' : 'xpPokemonH']) || (a.nivel - b.nivel));
+  let pool = busca ? linhasBonus.filter((l) => huntBateBusca(l, busca)) : linhasBonus;
+  const todas = pool.slice().sort((a, b) => (b[chaveOrd] - a[chaveOrd]) || (a.nivel - b.nivel));
 
   if (!todas.some((l) => l.regiao === regiaoVista)) regiaoVista = '';
   const linhas = regiaoVista ? todas.filter((l) => l.regiao === regiaoVista) : todas;
   const top = linhas.find((l) => !l.inviavel);
 
-  desenharRegioes(todas, ouro);
+  desenharRegioes(todas);
+
+  if (!pool.length) {
+    const msg = busca
+      ? `Nenhuma hunt encontrada para “${esc(busca)}”.`
+      : 'Nenhuma hunt liberada para o seu nível de treinador.';
+    $('melhor').innerHTML = `<div class="empty">${msg}</div>`;
+    $('corpo').innerHTML = '';
+    return;
+  }
 
   if (!linhas.length) {
-    $('melhor').innerHTML = '<div class="empty">Nenhuma hunt liberada para o seu nível de treinador.</div>';
+    $('melhor').innerHTML = '<div class="empty">Nenhuma hunt nesta região com os filtros atuais.</div>';
     $('corpo').innerHTML = '';
     return;
   }
@@ -750,11 +796,12 @@ function renderRanking(r) {
     const princ = ouro ? l.ouroH : l.xpPokemonH;
     const sec = ouro ? l.xpPokemonH : l.ouroH;
     const rankCls = i === 0 ? 'rank rank-gold' : 'rank';
+    const clsAbates = abates ? ' col-sort' : '';
     return `<tr class="${i === 0 ? 'top' : ''}">
       <td class="${rankCls}">${i === 0 ? '★ 1' : i + 1}</td>
       <td><span class="hunt-nome">${esc(l.nome)}</span><span class="hunt-meta"><span class="tag">Nv ${l.nivel}</span>${esc(regiaoLabel(l.regiao))}</span></td>
       <td class="${ouro ? 'num-ouro' : 'num-xp'}">${curto(princ)}</td>
-      <td>${abatesHtml(l)}</td>
+      <td class="${clsAbates.trim()}">${abatesHtml(l)}</td>
       <td>${dec1(l.ttk)} s</td>
       <td>${curto(sec)}</td>
     </tr>`;
@@ -919,6 +966,7 @@ async function iniciar() {
   $('nvTreinador').value = estado.nvTreinador;
   $('nvPokemon').value = estado.nvPokemon ?? '';
   $('bonusXp').value = estado.bonusXp ?? '';
+  $('buscaPokemon').value = estado.buscaPokemon ?? '';
   syncOpcoesBikeAoeUi();
   $('soLiberadas').checked = estado.soLiberadas;
   $('tipoDia').value = estado.tipoDia;
@@ -969,6 +1017,11 @@ async function iniciar() {
   });
   $('soLiberadas').addEventListener('change', () => { estado.soLiberadas = $('soLiberadas').checked; aoRecalcular(); });
   $('tipoDia').addEventListener('change', () => { estado.tipoDia = $('tipoDia').value; aoRecalcular(); });
+  $('buscaPokemon').addEventListener('input', () => {
+    estado.buscaPokemon = $('buscaPokemon').value;
+    salvarEstado();
+    rerenderSePronto();
+  });
   $('ordemSeg').addEventListener('click', (e) => {
     const b = e.target.closest('[data-ordem]');
     if (!b) return;
