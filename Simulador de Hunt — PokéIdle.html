@@ -272,7 +272,7 @@ tbody tr.inv td{color:var(--ruim);opacity:.85}
         <div class="field">
           <label for="ficha">Ficha copiada do jogo</label>
           <textarea id="ficha" placeholder="Do nome do pokémon até &quot;Stats-base da espécie&quot;…"></textarea>
-          <p class="field-hint">Cole a ficha inteira. IVs, golpes e selo AoE são lidos automaticamente.</p>
+          <p class="field-hint">Cole a ficha inteira (até “Stats-base da espécie”). IVs, AoE e os <strong>+N</strong> das pedras nessa seção entram no cálculo — editar só “Stats atuais” não muda o farm; mude os <strong>+N</strong> do stat (ex. Sp.ATK).</p>
         </div>
         <div class="grid3">
           <div class="field">
@@ -437,27 +437,67 @@ function nivelPokemonSimulado(ficha) {
   return ficha?.nivel > 0 ? ficha.nivel : null;
 }
 
-/** Monta o pokémon para o motor; se o nível ≠ ficha, recalcula stats e golpes pelo jogo. */
+const CHAVE_STAT_FICHA = {
+  HP: 'hp', ATK: 'atk', DEF: 'def', 'SP.ATK': 'spAtk', 'SP.DEF': 'spDef', SPD: 'speed',
+};
+
+/** Lê os +N das pedras em “Stats-base da espécie” (Thunder Stone etc.). Soma várias linhas +N por stat. */
+function parseRefinoSpeciesBase(texto) {
+  const linhas = String(texto ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const iBase = linhas.findIndex((l) => /^stats-base da esp/i.test(l));
+  if (iBase < 0) return null;
+  const parar = (l) => /^(experi[eê]ncia|o pre[cç]o segue|identidade|calcular pokemon)/i.test(l);
+  const refino = Object.fromEntries(Object.values(CHAVE_STAT_FICHA).map((k) => [k, 0]));
+  let viStat = false;
+  for (let i = iBase + 1; i < linhas.length && !parar(linhas[i]); i++) {
+    const key = CHAVE_STAT_FICHA[linhas[i].toUpperCase()];
+    if (!key) continue;
+    viStat = true;
+    i++;
+    if (i < linhas.length && /^[\d.,]+$/.test(linhas[i])) i++;
+    while (i < linhas.length && !parar(linhas[i]) && !CHAVE_STAT_FICHA[linhas[i].toUpperCase()]) {
+      const m = /^\+(\d+)$/.exec(linhas[i]);
+      if (m) refino[key] += Number(m[1]);
+      i++;
+    }
+    i--;
+  }
+  return viStat ? refino : null;
+}
+
+function textoFichaBruto() {
+  return String($('ficha')?.value ?? estado.ficha ?? '');
+}
+
+/** Monta o pokémon para o motor (stats pela fórmula quando há pedras na ficha ou nível simulado ≠ ficha). */
 async function pokemonParaSimulacao(ficha) {
   const { pokemonDaFicha } = await import(`${ORIGEM_JS}hunt/pokemon-da-ficha.js`);
   const base = pokemonDaFicha(ficha, jogo);
   const nv = nivelPokemonSimulado(ficha);
   if (!nv) throw new Error('Informe o nível do pokémon.');
+  const refinoPedras = parseRefinoSpeciesBase(textoFichaBruto());
   const statsOk = ficha.stats && ['hp', 'atk', 'def', 'spAtk', 'spDef', 'speed'].every((k) => Number(ficha.stats[k]) > 0);
   const mesmoNv = nv === ficha.nivel;
-  if (mesmoNv && statsOk) {
-    return { pokemon: base.pokemon, nivelPokemon: nv, resumo: base.resumo, recalculado: false };
+  const usarFormula = !!refinoPedras || !mesmoNv || !statsOk;
+  if (!usarFormula && mesmoNv && statsOk) {
+    return { pokemon: base.pokemon, nivelPokemon: nv, resumo: base.resumo, recalculado: false, refinoPedras: null };
   }
+  const nascimento = refinoPedras
+    ? { ...base.pokemon.nascimento, refino: { ...refinoPedras } }
+    : base.pokemon.nascimento;
   const pokemon = {
     ...base.pokemon,
+    nascimento,
     statsInformados: null,
     nivelDosStats: null,
   };
+  const origemStats = refinoPedras ? 'pedras+IV' : 'fórmula';
   return {
     pokemon,
     nivelPokemon: nv,
-    resumo: { ...base.resumo, nivel: nv, statsDaFicha: false },
+    resumo: { ...base.resumo, nivel: nv, statsDaFicha: false, origemStats },
     recalculado: true,
+    refinoPedras,
     nvFicha: ficha.nivel,
   };
 }
@@ -789,7 +829,9 @@ async function renderStatsPokemon(ficha, statsProntos = null) {
       stats = pk.stats;
       ivs = pk.ivs ?? ivs;
       nv = sim.nivelPokemon;
-      origem = sim.recalculado ? 'fórmula do jogo' : 'da ficha';
+      origem = sim.refinoPedras
+        ? 'fórmula · pedras da ficha'
+        : (sim.recalculado ? 'fórmula do jogo' : 'da ficha');
     } else {
       nv = nivelPokemonSimulado(ficha);
       origem = nv !== ficha.nivel ? 'fórmula do jogo' : 'da ficha';
